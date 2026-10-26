@@ -860,42 +860,90 @@ int Mb86h47Bridge::CardWrite(const std::uint8_t *buf, std::uint8_t len)
 
 int Mb86h47Bridge::StreamPrepare()
 {
-	static const std::uint32_t zero4[] = { 0xD01040, 0xD01064, 0xD010A0, 0xD010A4, 0xD010A8 };
-	static const std::uint32_t zero4b[] = { 0xD02028, 0xD0202C, 0xD02030, 0xD02038 };
+	StreamPrepareBegin();
+	BR_TRY(StreamPrepareEngine());
+	return StreamPrepareUsb();
+}
 
-	BR_TRY(Write32(0xD000C4, 0));
-	BR_TRY(Write32(0xD00000, 0xFFFFFFFF));
-	BR_TRY(Write32(0xD00004, 0x001F33FF));
-	BR_TRY(Write32(0xD00000, 0x30030FFF));
-	BR_TRY(Write32(0xD00000, 0x00030000));
-	BR_TRY(Write32(0xD00004, 0x00003305));
-	for (std::uint32_t a : zero4)
-		BR_TRY(Write32(a, 0));
-	BR_TRY(Write32(0xD01020, 0x02000000));
-	BR_TRY(Write32(0xD01004, 0));
-	BR_TRY(Write32(0xD01044, 0x00BC0000));
-	BR_TRY(Write32(0xD01048, 0x47000000));
-	BR_TRY(Write32(0xD0104C, 0x00FFFFFF));
-	BR_TRY(Write32(0xD01050, 0));
-	BR_TRY(Write32(0xD01060, 0));
-	BR_TRY(Write32(0xD01000, 0x06070000));
-	BR_TRY(Write32(0xD01080, 0x01000000));
-	BR_TRY(Write32(0xD01088, 0));
-	BR_TRY(Write32(0xD0108C, 0xFF));
-	BR_TRY(Write32(0xD01084, 0));
-	BR_TRY(Write32(0xD01090, 0x01000000));
-	for (std::uint32_t a : zero4b)
-		BR_TRY(Write32(a, 0));
-	BR_TRY(Write32(0xD02000, 0x03020300));
-	BR_TRY(Write32(0xD02020, 0x00AE4000));
-	BR_TRY(Write32(0xD02024, 0x00600000));
-	BR_TRY(Write32(0xD00004, 0x00043305));
+namespace {
 
-	/* core 0 (パケタイザ) */
-	BR_TRY(LoadCore(kCore0Base, zd1fw::kZd1FwCore0, sizeof(zd1fw::kZd1FwCore0) / 4, false));
-	core0_loaded_ = true;
-	BR_TRY(ReleaseCore(kCore0Base));
+struct PrepWrite {
+	std::uint32_t addr;
+	std::uint32_t value;
+};
 
+/* spec 04 章 4.2 の手順 1〜25 (TS エンジン)。TS の入力とリング書き込みは止めたまま設定する */
+const PrepWrite kPrepWrites[] = {
+	{ 0xD000C4, 0 },
+	{ 0xD00000, 0xFFFFFFFF },
+	{ 0xD00004, 0x001F33FF },
+	{ 0xD00000, 0x30030FFF },
+	{ 0xD00000, 0x00030000 },
+	{ 0xD00004, 0x00003305 },
+	{ 0xD01040, 0 },
+	{ 0xD01064, 0 },
+	{ 0xD010A0, 0 },
+	{ 0xD010A4, 0 },
+	{ 0xD010A8, 0 },
+	{ 0xD01020, 0x02000000 },
+	{ 0xD01004, 0 },
+	{ 0xD01044, 0x00BC0000 },
+	{ 0xD01048, 0x47000000 },
+	{ 0xD0104C, 0x00FFFFFF },
+	{ 0xD01050, 0 },
+	{ 0xD01060, 0 },
+	{ 0xD01000, 0x06070000 },
+	{ 0xD01080, 0x01000000 },
+	{ 0xD01088, 0 },
+	{ 0xD0108C, 0xFF },
+	{ 0xD01084, 0 },
+	{ 0xD01090, 0x01000000 },
+	{ 0xD02028, 0 },
+	{ 0xD0202C, 0 },
+	{ 0xD02030, 0 },
+	{ 0xD02038, 0 },
+	{ 0xD02000, 0x03020300 },
+	{ 0xD02020, 0x00AE4000 },
+	{ 0xD02024, 0x00600000 },
+	{ 0xD00004, 0x00043305 },
+};
+
+} // namespace
+
+void Mb86h47Bridge::StreamPrepareBegin()
+{
+	static_assert(sizeof(kPrepWrites) / sizeof(kPrepWrites[0]) == Mb86h47Bridge::kPrepEngineWrites, "prepare steps");
+	prep_idx_ = 0;
+}
+
+int Mb86h47Bridge::StreamPrepareStep()
+{
+	if (prep_idx_ < kPrepEngineWrites) {
+		const PrepWrite &w = kPrepWrites[prep_idx_++];
+
+		return Write32(w.addr, w.value);
+	}
+
+	if (prep_idx_ == kPrepEngineWrites) {
+		/* core 0 (パケタイザ) の読み込みと起動。差分だけ書くため、2 回目以降は短い */
+		prep_idx_++;
+		BR_TRY(LoadCore(kCore0Base, zd1fw::kZd1FwCore0, sizeof(zd1fw::kZd1FwCore0) / 4, false));
+		core0_loaded_ = true;
+		return ReleaseCore(kCore0Base);
+	}
+
+	return 0;
+}
+
+int Mb86h47Bridge::StreamPrepareEngine()
+{
+	while (StreamPrepareRemaining())
+		BR_TRY(StreamPrepareStep());
+	return 0;
+}
+
+int Mb86h47Bridge::StreamPrepareUsb()
+{
 	/* USB とエンドポイント 0x81 */
 	BR_TRY(Modify32(0xFD8010, 0, 0x000F0000));
 	BR_TRY(Write32(0xFD8200, 1));

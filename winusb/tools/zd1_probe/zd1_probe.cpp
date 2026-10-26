@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include <windows.h>
 #include <setupapi.h>
@@ -284,6 +285,81 @@ int main(int argc, char **argv)
 			dib.SetOutputMode(px4::Dib8096::OutputMode::HIGH_Z);
 		}
 		dib.SetGpio(1, false);
+		dib.Sleep();
+	} else if (cmd == "tunebench") {
+		/* tunebench <ch,ch,...> <繰り返し>: 選局だけを繰り返し、待ちと I2C の時間の内訳を出す */
+		std::vector<int> chs;
+		std::string list = (argc > 3) ? argv[3] : "27";
+		int repeat = (argc > 4) ? atoi(argv[4]) : 3;
+
+		for (size_t i = 0; i < list.size();) {
+			chs.push_back(atoi(list.c_str() + i));
+			size_t j = list.find(',', i);
+
+			i = (j == std::string::npos) ? list.size() : j + 1;
+		}
+
+		ret = br.Start();
+		if (!ret) ret = br.ResetDemodulator();
+
+		struct Prof { std::vector<unsigned> hist; unsigned sleeps = 0; double sleep_req = 0, sleep_real = 0, i2c = 0; unsigned i2c_n = 0; } prof;
+		LARGE_INTEGER f;
+
+		QueryPerformanceFrequency(&f);
+		auto now_ms = [&]() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return 1000.0 * t.QuadPart / f.QuadPart; };
+
+		class ProfBus final : public px4::Dib8096::Bus {
+		public:
+			ProfBus(px4::Mb86h47Bridge &b, Prof &p, std::function<double()> n) : b_(b), p_(p), n_(n) {}
+			int Transfer(std::uint8_t a, const std::uint8_t *w, std::size_t wl, std::uint8_t *r, std::size_t rl) override
+			{
+				double t = n_();
+				int ret = b_.I2cAccess(a, w, wl, r, rl);
+
+				p_.i2c += n_() - t;
+				p_.i2c_n++;
+				return ret;
+			}
+			int Flush() override { double t = n_(); int ret = b_.I2cFlush(); p_.i2c += n_() - t; return ret; }
+		private:
+			px4::Mb86h47Bridge &b_;
+			Prof &p_;
+			std::function<double()> n_;
+		} pbus(br, prof, now_ms);
+
+		px4::Dib8096 dib(pbus, nullptr, [&](unsigned int ms) {
+			pbus.Flush();
+			double t = now_ms();
+
+			px4::Dib8096::PreciseSleepMs(ms);
+			prof.sleeps++;
+			prof.hist.push_back(ms);
+			prof.sleep_req += ms;
+			prof.sleep_real += now_ms() - t;
+		});
+
+		if (!ret) ret = dib.Initialize();
+		for (int r = 0; r < repeat && !ret; r++) {
+			for (int ch : chs) {
+				prof = Prof();
+				double t0 = now_ms();
+
+				ret = dib.Tune((473142857u + 6000000u * (ch - 13)) / 1000 * 1000);
+				double total = now_ms() - t0;
+				px4::Dib8096::Status st = {};
+
+				dib.GetStatus(st);
+				if (getenv("ZD1_HIST")) {
+					std::string h;
+
+					for (unsigned v : prof.hist)
+						h += std::to_string(v) + " ";
+					Log("  sleeps: %s\n", h.c_str());
+				}
+				Log("ch%d: ret=%d total=%.0fms sleeps=%u (req %.0f real %.0f) i2c=%u (%.0fms) flags=0x%02X cnr=%d\n",
+					ch, ret, total, prof.sleeps, prof.sleep_req, prof.sleep_real, prof.i2c_n, prof.i2c, st.flags, st.cnr_cdb);
+			}
+		}
 		dib.Sleep();
 	} else if (cmd == "bench") {
 		ret = br.Start();

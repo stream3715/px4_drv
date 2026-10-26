@@ -80,6 +80,18 @@ public:
 
 	/* ---- ストリーム ---- */
 	int StreamPrepare();	/* 04 章 4.2 */
+	/*
+	 * StreamPrepare を、選局の待ち時間に 1 ステップずつ進められるようにしたもの (spec 04 章 4.4)。
+	 * Begin で手順を用意し、Step で次の 1 つ (メモリ要求 1 回、または core 0 の読み込み) を実行する。
+	 * Engine は残りの TS エンジンと core 0 を実行し、Usb は EP1/EP2 の DMA モードを書き換える。
+	 * Usb は I2C のコマンドパケットの通信を乱すため、選局が終わってから実行する。
+	 * 別のスレッドで並行して実行すると、I2C の読み出しが失敗することが実機で確認されたため、必ず同じスレッドで行う。
+	 */
+	void StreamPrepareBegin();
+	bool StreamPrepareRemaining() const noexcept { return prep_idx_ <= kPrepEngineWrites; }
+	int StreamPrepareStep();
+	int StreamPrepareEngine();
+	int StreamPrepareUsb();
 	int StreamStart(StreamHandler handler, const StreamConfig &config);	/* 4.3 と読み出しの開始 */
 	void StreamStop();	/* 4.5 */
 	int ReadCore0Counter(std::uint32_t &sent_units);
@@ -105,6 +117,8 @@ private:
 
 	WINUSB_INTERFACE_HANDLE winusb_;
 	LogFn log_;
+	static constexpr std::size_t kPrepEngineWrites = 32;
+	std::size_t prep_idx_ = kPrepEngineWrites + 1;
 	bool cmd_ok_;
 	std::uint32_t cmd_seq_;
 	std::size_t cmd_slot_;

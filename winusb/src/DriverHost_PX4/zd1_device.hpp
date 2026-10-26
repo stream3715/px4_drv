@@ -116,6 +116,13 @@ private:
 
 	int StartCapture();
 	void StopCapture();
+	/* ストリーム設定 (TS エンジン、core 0、USB の DMA) を、選局の待ち時間に並行して済ませる */
+	void BeginStreamPrepare();
+	void WaitDuringTune(unsigned int ms);
+	int FinishStreamPrepare();
+	static std::wstring LockCachePath();
+	void LoadLocks();
+	void SaveLocks();
 	int StreamHandler(const std::uint8_t *buf, std::size_t len);
 
 	Zd1DeviceConfig config_;
@@ -124,6 +131,8 @@ private:
 	std::atomic_bool init_;
 	bool capture_;
 	bool card_open_;
+	bool prepare_active_;
+	int prepare_error_;
 	std::unique_ptr<Zd1Receiver> receiver_;
 	std::unique_ptr<px4::Mb86h47Bridge> bridge_;
 	std::unique_ptr<BridgeBus> bus_;

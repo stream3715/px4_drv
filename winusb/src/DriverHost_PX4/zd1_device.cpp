@@ -4,6 +4,9 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <chrono>
+#include <string>
+#include <vector>
 
 #include "type.hpp"
 #include "command.hpp"
@@ -37,7 +40,9 @@ Zd1Device::Zd1Device(const std::wstring &path, const px4::DeviceDefinition &devi
 	available_(true),
 	init_(false),
 	capture_(false),
-	card_open_(false)
+	card_open_(false),
+	prepare_active_(false),
+	prepare_error_(0)
 {
 	if (usb_dev_.descriptor.idVendor != 0x054c || usb_dev_.descriptor.idProduct != 0x04b2)
 		throw DeviceError("px4::Zd1Device::Zd1Device: unsupported device. (unknown vendor id or product id)");
@@ -120,13 +125,15 @@ int Zd1Device::Init()
 	}
 
 	bus_.reset(new BridgeBus(*this));
-	dib_.reset(new px4::Dib8096(*bus_, BridgeLog, nullptr));
+	dib_.reset(new px4::Dib8096(*bus_, BridgeLog, [this](unsigned int ms) { WaitDuringTune(ms); }));
 
 	ret = dib_->Initialize();
 	if (ret) {
 		dev_err(&dev_, "px4::Zd1Device::Init: Dib8096::Initialize() failed. (ret: %d)\n", ret);
 		goto fail;
 	}
+
+	LoadLocks();
 
 	/* 受信機を開くまでは省電力にしておく。次の Tune で自動的に復帰する */
 	ret = dib_->Sleep();
@@ -279,6 +286,81 @@ ReceiverBase* Zd1Device::GetReceiver(int id) const
 	return receiver_.get();
 }
 
+std::wstring Zd1Device::LockCachePath()
+{
+	wchar_t buf[MAX_PATH];
+	DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+
+	if (!n || n >= MAX_PATH)
+		return std::wstring();
+
+	std::wstring path(buf, n);
+	size_t pos = path.find_last_of(L"\\/");
+
+	path.resize(pos == std::wstring::npos ? 0 : pos + 1);
+	return path + L"CECH-ZD1J_locks.txt";
+}
+
+/*
+ * ロックしたチャンネルの伝送パラメーターは放送局ごとに固定のため、DriverHost_PX4 の再起動後も使えるよう
+ * 実行ファイルの隣に保存する。読めない・書けない場合は、毎回自動探索になるだけで動作は変わらない。
+ */
+void Zd1Device::LoadLocks()
+{
+	const std::wstring path = LockCachePath();
+	FILE *fp = nullptr;
+
+	if (path.empty() || _wfopen_s(&fp, path.c_str(), L"r") || !fp)
+		return;
+
+	std::vector<px4::Dib8096::LockRecord> records;
+	px4::Dib8096::LockRecord r = {};
+
+	while (fscanf_s(fp, "%u %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+		&r.frequency, &r.transmission_mode, &r.guard_interval, &r.inversion, &r.partial_reception,
+		&r.fec[0], &r.modulation[0], &r.interleaving[0], &r.segment_count[0],
+		&r.fec[1], &r.modulation[1], &r.interleaving[1], &r.segment_count[1],
+		&r.fec[2], &r.modulation[2], &r.interleaving[2], &r.segment_count[2]) == 17)
+		records.push_back(r);
+
+	fclose(fp);
+	dib_->ImportLocks(records);
+}
+
+void Zd1Device::SaveLocks()
+{
+	std::lock_guard<std::recursive_mutex> lock(lock_);
+
+	if (!dib_ || !dib_->locks_dirty())
+		return;
+
+	const std::wstring path = LockCachePath();
+
+	if (path.empty())
+		return;
+
+	const std::wstring tmp = path + L".tmp";
+	FILE *fp = nullptr;
+
+	if (_wfopen_s(&fp, tmp.c_str(), L"w") || !fp)
+		return;
+
+	for (const auto &r : dib_->ExportLocks()) {
+		fprintf(fp, "%u %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+			r.frequency, r.transmission_mode, r.guard_interval, r.inversion, r.partial_reception,
+			r.fec[0], r.modulation[0], r.interleaving[0], r.segment_count[0],
+			r.fec[1], r.modulation[1], r.interleaving[1], r.segment_count[1],
+			r.fec[2], r.modulation[2], r.interleaving[2], r.segment_count[2]);
+	}
+
+	const bool ok = (fclose(fp) == 0);
+
+	if (ok && MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		dib_->clear_locks_dirty();
+	else
+		DeleteFileW(tmp.c_str());
+}
+
 int Zd1Device::StartCapture()
 {
 	std::lock_guard<std::recursive_mutex> lock(lock_);
@@ -288,8 +370,8 @@ int Zd1Device::StartCapture()
 	if (!available_)
 		return -ENODEV;
 
-	/* 設定の続きは入力を止めたまま済ませ、読み出しを発行してから入力を許可する */
-	int ret = bridge_->StreamPrepare();
+	/* 設定は入力を止めたまま済ませ、読み出しを発行してから入力を許可する */
+	int ret = FinishStreamPrepare();
 	if (ret) {
 		dev_err(&dev_, "px4::Zd1Device::StartCapture: StreamPrepare() failed. (ret: %d)\n", ret);
 		return ret;
@@ -312,9 +394,63 @@ int Zd1Device::StartCapture()
 	return 0;
 }
 
+void Zd1Device::BeginStreamPrepare()
+{
+	std::lock_guard<std::recursive_mutex> lock(lock_);
+
+	if (capture_)
+		return;
+
+	bridge_->StreamPrepareBegin();
+	prepare_active_ = true;
+	prepare_error_ = 0;
+}
+
+/*
+ * 選局の待ち時間に、ストリーム設定の続きを 1 ステップずつ進める (spec 04 章 4.4)。
+ * 設定は TS エンジンの入力とリング書き込みを止めたままで、選局中の復調器の出力は取り込まれない。
+ * 別のスレッドではなく待ちを呼んだスレッドで行うのは、制御転送を I2C のバルク転送と同時に走らせると、
+ * 実機で I2C の読み出しが失敗する (150 回中 2 回) ことがあったため。
+ */
+void Zd1Device::WaitDuringTune(unsigned int ms)
+{
+	const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+
+	while (prepare_active_ && !prepare_error_ && bridge_->StreamPrepareRemaining() &&
+		end - std::chrono::steady_clock::now() >= std::chrono::milliseconds(5))
+		prepare_error_ = bridge_->StreamPrepareStep();
+
+	const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(end - std::chrono::steady_clock::now());
+
+	if (left.count() > 0)
+		px4::Dib8096::PreciseSleepMs(static_cast<unsigned int>(left.count()));
+}
+
+int Zd1Device::FinishStreamPrepare()
+{
+	std::lock_guard<std::recursive_mutex> lock(lock_);
+
+	if (!prepare_active_)
+		bridge_->StreamPrepareBegin();
+	prepare_active_ = false;
+
+	if (prepare_error_)
+		return prepare_error_;
+
+	int ret = bridge_->StreamPrepareEngine();
+
+	if (ret)
+		return ret;
+
+	return bridge_->StreamPrepareUsb();
+}
+
 void Zd1Device::StopCapture()
 {
 	std::lock_guard<std::recursive_mutex> lock(lock_);
+
+	/* 途中までの設定は捨てる。受信を始めるときに、最初からやり直す */
+	prepare_active_ = false;
 
 	if (!capture_)
 		return;
@@ -417,10 +553,13 @@ int Zd1Device::Zd1Receiver::SetFrequency()
 
 	/* 選局中は TS 出力が止まっている必要がある。受信中なら先に TS の読み出しを止める */
 	parent_.StopCapture();
+	parent_.BeginStreamPrepare();
 
 	int ret = parent_.dib_->Tune(params_.freq * 1000);
 	if (ret)
 		dev_err(&parent_.dev_, "px4::Zd1Device::Zd1Receiver::SetFrequency: Dib8096::Tune() failed. (ret: %d)\n", ret);
+
+	parent_.SaveLocks();
 
 	return ret;
 }

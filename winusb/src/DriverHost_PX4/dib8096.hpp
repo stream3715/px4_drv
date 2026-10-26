@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include <map>
+#include <vector>
 
 namespace px4 {
 
@@ -58,6 +60,29 @@ public:
 		bool cnr_valid;
 	};
 
+	/*
+	 * 既定の待ち。Sleep() は既定のタイマー精度 (約 15.6 ms) に丸められ、選局で 90 回前後ある数 ms の待ちが
+	 * 合計で 0.5 秒ほど延びるため、高分解能タイマーで待つ。
+	 */
+	static void PreciseSleepMs(unsigned int ms);
+
+	/*
+	 * 一度ロックしたチャンネルの伝送パラメーター (モード、ガード間隔、各階層)。放送局ごとに固定のため、
+	 * 次回の選局では自動探索 (FFT 探索とガード探索) を飛ばし、パラメーター設定から始められる。
+	 * この値でロックしなかった場合は、記録を捨てて自動探索でやり直す。
+	 */
+	struct LockRecord {
+		std::uint32_t frequency;	/* Hz */
+		int transmission_mode;
+		int guard_interval;
+		int inversion;
+		int partial_reception;
+		int fec[3];
+		int modulation[3];
+		int interleaving[3];
+		int segment_count[3];
+	};
+
 	Dib8096(Bus &bus, LogFn log, WaitFn wait);
 	~Dib8096();
 
@@ -73,6 +98,12 @@ public:
 	/* ロック状態だけの軽い読み出し (STATUS_SIGNAL/CARRIER/SYNC/LOCK) */
 	int GetLockFlags(unsigned int &flags);
 	int Sleep();
+
+	/* ロック済みチャンネルの記録の出し入れ。記録が増減したときは locks_dirty() が true になる */
+	std::vector<LockRecord> ExportLocks() const;
+	void ImportLocks(const std::vector<LockRecord> &records);
+	bool locks_dirty() const noexcept { return locks_dirty_; }
+	void clear_locks_dirty() noexcept { locks_dirty_ = false; }
 
 	/* 診断用 */
 	std::uint16_t revision() const noexcept { return revision_; }
@@ -126,6 +157,14 @@ private:
 		int min_adc_diff;
 		int band;
 		std::uint32_t rf_request;
+		/* 周波数ごとの captrim の再利用 */
+		struct CaptrimEntry {
+			int captrim;
+			int adc_diff;
+		};
+		std::map<std::uint32_t, CaptrimEntry> captrim_cache;
+		CaptrimEntry reuse;
+		std::uint64_t temp_time_us;	/* 最後に温度を測った時刻。0 = 未測定 */
 	};
 
 	/* ---- I2C (復調器) ---- */
@@ -166,6 +205,7 @@ private:
 	unsigned int AgcStartup();
 	void SetDiversityIn(int onoff);
 	int SetFrontend();
+	int SetFrontendOnce();
 	void SetIsdbtCommonChannel(unsigned int seq, bool autosearching);
 	int SetLayer(unsigned int i, int max_constellation);
 	void LoadAnaFeCoefs(const std::int16_t *table);
@@ -201,6 +241,7 @@ private:
 	unsigned int WbdCalibration();
 	unsigned int GetTemperature();
 	unsigned int CaptrimSearch();
+	void TunerCalibrateDc();
 	std::int32_t GetWbdTarget();
 	std::uint32_t TunerGetFrequency() const { return tuner_.current_rf * 1000; }
 	void TunerSleepLine(int on);
@@ -241,6 +282,11 @@ private:
 	std::uint64_t timeout_us_;
 
 	Tuner tuner_;
+
+	std::map<std::uint32_t, LockRecord> locks_;
+	bool locks_dirty_;
+	bool manual_mode_;
+	bool last_tune_manual_;
 };
 
 } // namespace px4

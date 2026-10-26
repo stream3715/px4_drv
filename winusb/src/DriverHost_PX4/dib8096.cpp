@@ -85,6 +85,17 @@ int BandOfFrequency(std::uint32_t khz)
 	return BAND_SBAND;
 }
 
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+/* スレッドごとの高分解能タイマー。作れない環境 (Windows 10 1803 より前) では Sleep() にフォールバックする */
+struct PreciseTimer final {
+	PreciseTimer() : handle(CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS)) {}
+	~PreciseTimer() { if (handle) CloseHandle(handle); }
+	HANDLE handle;
+};
+
 int Fls(int x)
 {
 	int r = 0;
@@ -105,7 +116,8 @@ Dib8096::Dib8096(Bus &bus, LogFn log, WaitFn wait)
 	mode_(3), seg_diff_mask_(0), seg_mask_(0x1FFF), isdbt_cfg_loaded_(false), channel_(),
 	output_mode_(OutputMode::PARALLEL_GATED), asleep_(true), channel_parameters_set_(false),
 	tune_state_(0), autosearch_state_(0), found_nfft_(TM_AUTO), found_guard_(GI_AUTO), status_(ST_PENDING),
-	symbol_duration_(1), longest_intlv_layer_(0), timeout_us_(0), tuner_()
+	symbol_duration_(1), longest_intlv_layer_(0), timeout_us_(0), tuner_(),
+	locks_(), locks_dirty_(false), manual_mode_(false), last_tune_manual_(false)
 {
 }
 
@@ -160,6 +172,21 @@ void Dib8096::Modify(std::uint16_t reg, std::uint16_t keep, std::uint16_t set)
 	Wr(reg, (v & keep) | set);
 }
 
+void Dib8096::PreciseSleepMs(unsigned int ms)
+{
+	thread_local PreciseTimer timer;
+
+	if (timer.handle) {
+		LARGE_INTEGER due;
+
+		due.QuadPart = -static_cast<LONGLONG>(ms) * 10000;
+		if (SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE) && WaitForSingleObject(timer.handle, INFINITE) == WAIT_OBJECT_0)
+			return;
+	}
+
+	::Sleep(ms);
+}
+
 void Dib8096::FlushBus()
 {
 	/* 溜めた書き込みの失敗は、送り終えたここで初めて分かる */
@@ -177,13 +204,15 @@ void Dib8096::Sleepms(unsigned int ms)
 	if (err_)
 		return;
 
+	/* 溜めた書き込みを先に送る。待ち (wait_) の中でほかの準備を進めてよいが、I2C は使わない */
+	FlushBus();
+	if (err_)
+		return;
+
 	if (wait_)
 		wait_(ms);
-	else {
-		FlushBus();
-		if (!err_)
-			::Sleep(ms);
-	}
+	else
+		PreciseSleepMs(ms);
 }
 
 void Dib8096::WriteTable(const std::uint16_t *t)
@@ -592,6 +621,10 @@ void Dib8096::SetDiversityIn(int onoff)
 	case 2: Wr(270, 0); Wr(271, 1); break;
 	}
 
+	/*
+	 * 同じ設定の繰り返しでも、この追加の書き込みと 30ms の待ちを省くとロックしない選局が出る
+	 * (実機で、省いた場合に 18 回中 1 回ロックしなかった)。
+	 */
 	if (revision_ == 0x8002) {
 		std::uint16_t t = Rd(903);
 
@@ -951,16 +984,20 @@ unsigned int Dib8096::TuneStateMachine()
 	case DEMOD_START:
 		Rd(565);
 		status_ = ST_PENDING;
-		channel_parameters_set_ = false;		/* 周波数のみの選局。手動モードにはならない */
+		channel_parameters_set_ = manual_mode_;		/* 記録済みのパラメーターがあれば手動モード */
 		ViterbiState(false);
 		Modify(285, 0x0060, 0);
 		SetFrequencyOffset();
 		SetBandwidth();
-		autosearch_state_ = SEARCH_FFT;
 		found_nfft_ = TM_AUTO;
 		found_guard_ = GI_AUTO;
-		tune_state_ = DEMOD_SEARCH_NEXT;
-		symbol_duration_ = 26 / 6 + 1;
+		if (manual_mode_) {
+			autosearch_state_ = SEARCH_DONE;
+			tune_state_ = DEMOD_STEP3;
+		} else {
+			autosearch_state_ = SEARCH_FFT;
+			tune_state_ = DEMOD_SEARCH_NEXT;
+		}
 		symbol_duration_ = 1;
 		break;
 
@@ -1099,7 +1136,12 @@ unsigned int Dib8096::TuneStateMachine()
 
 	case DEMOD_STEP10:
 		locks = Rd(568);
-		if (locks & (1 << (7 - longest_intlv_layer_))) {
+		/*
+		 * いずれかの階層が MPEG ロックした時点で抜ける。最も深いインターリーブの階層を待つと、
+		 * 受信できる階層があっても、そのデインターリーバが満ちるまで約 0.4 秒余計にかかる。
+		 * 待ち時間切れの判定 (下) が既に「いずれかの階層」であることと揃えている。
+		 */
+		if (locks & (7 << 5)) {
 			status_ = ST_DATA_LOCKED;
 			tune_state_ = DEMOD_STOP;
 		} else if (NowUs() > timeout_us_) {
@@ -1123,6 +1165,89 @@ unsigned int Dib8096::TuneStateMachine()
 }
 
 int Dib8096::SetFrontend()
+{
+	last_tune_manual_ = manual_mode_;
+
+	int r = SetFrontendOnce();
+	const bool locked = (status_ == ST_LOCKED || status_ == ST_DATA_LOCKED);
+
+	if (!r && manual_mode_ && !locked) {
+		/* 記録したパラメーターでロックしなかった。記録を捨てて自動探索でやり直す */
+		if (log_)
+			log_("dib8000: stored lock parameters failed for %u Hz. searching again.\n", channel_.frequency);
+		if (locks_.erase(channel_.frequency))
+			locks_dirty_ = true;
+		manual_mode_ = false;
+		last_tune_manual_ = false;
+
+		const std::uint32_t freq = channel_.frequency;
+
+		std::memset(&channel_, 0, sizeof(channel_));
+		channel_.frequency = freq;
+		channel_.transmission_mode = TM_AUTO;
+		channel_.guard_interval = GI_AUTO;
+		channel_.inversion = 2;
+		channel_.layer_enabled = 7;
+		for (auto &l : channel_.layer) {
+			l.fec = FEC_AUTO;
+			l.modulation = MOD_AUTO;
+		}
+		r = SetFrontendOnce();
+	}
+
+	if (!r && !manual_mode_ && (status_ == ST_LOCKED || status_ == ST_DATA_LOCKED)) {
+		/* 自動探索でロックした値を覚える。自動探索の結果は GetFrontend() が channel_ へ取り込んでいる */
+		LockRecord rec = {};
+
+		rec.frequency = channel_.frequency;
+		rec.transmission_mode = channel_.transmission_mode;
+		rec.guard_interval = channel_.guard_interval;
+		rec.inversion = channel_.inversion;
+		rec.partial_reception = channel_.partial_reception;
+		for (int i = 0; i < 3; i++) {
+			rec.fec[i] = channel_.layer[i].fec;
+			rec.modulation[i] = channel_.layer[i].modulation;
+			rec.interleaving[i] = channel_.layer[i].interleaving;
+			rec.segment_count[i] = channel_.layer[i].segment_count;
+		}
+
+		auto it = locks_.find(rec.frequency);
+
+		if (it == locks_.end() || std::memcmp(&it->second, &rec, sizeof(rec))) {
+			locks_[rec.frequency] = rec;
+			locks_dirty_ = true;
+		}
+	}
+
+	return r;
+}
+
+std::vector<Dib8096::LockRecord> Dib8096::ExportLocks() const
+{
+	std::vector<LockRecord> v;
+
+	for (const auto &kv : locks_)
+		v.push_back(kv.second);
+	return v;
+}
+
+void Dib8096::ImportLocks(const std::vector<LockRecord> &records)
+{
+	for (const auto &r : records) {
+		/* 不正な値が入り込んだファイルを使わないよう、範囲を確かめる */
+		bool ok = (r.transmission_mode == TM_2K || r.transmission_mode == TM_8K || r.transmission_mode == TM_4K) &&
+			r.guard_interval >= GI_1_32 && r.guard_interval <= GI_1_4 && (r.inversion == 0 || r.inversion == 1);
+
+		for (int i = 0; i < 3 && ok; i++)
+			ok = r.segment_count[i] >= 0 && r.segment_count[i] <= 13 && r.interleaving[i] >= 0 && r.interleaving[i] <= 4 &&
+				(r.modulation[i] == MOD_DQPSK || (r.modulation[i] >= MOD_QPSK && r.modulation[i] <= MOD_QAM64)) &&
+				r.fec[i] >= FEC_NONE && r.fec[i] <= FEC_7_8;
+		if (ok)
+			locks_[r.frequency] = r;
+	}
+}
+
+int Dib8096::SetFrontendOnce()
 {
 	channel_.bandwidth_hz = 6000000;
 	SetDiversityIn(1);
@@ -1151,6 +1276,7 @@ int Dib8096::SetFrontend()
 	bool active = true;
 
 	while (active && !err_) {
+		const int executed = tune_state_;
 		unsigned int delay = TuneStateMachine();
 		const bool have_cb = (delay != 0);
 		const std::uint64_t cb = NowUs() + static_cast<std::uint64_t>(delay) * 100;
@@ -1168,9 +1294,15 @@ int Dib8096::SetFrontend()
 			const std::uint64_t now = NowUs();
 			std::uint64_t wait_us = (cb > now) ? cb - now : 0;
 
-			if (wait_us < 10000)
-				wait_us = 10000;
-			Sleepms(static_cast<unsigned int>(wait_us / 1000));
+			/*
+			 * 待ちの下限。ステージ 4〜8 は、書き込み直後の再起動や、シンボル数で数えるタイムアウトを
+			 * 10ms 周期の確認を前提に決めているため 10ms を保つ。それ以外は 3ms 周期で確認する。
+			 */
+			const std::uint64_t floor_us = (executed >= DEMOD_STEP4 && executed <= DEMOD_STEP8) ? 10000 : 3000;
+
+			if (wait_us < floor_us)
+				wait_us = floor_us;
+			Sleepms(static_cast<unsigned int>((wait_us + 999) / 1000));
 		}
 		if (err_)
 			return err_;
@@ -1182,6 +1314,7 @@ int Dib8096::SetFrontend()
 	}
 
 	SetOutputModeRaw(output_mode_);
+	FlushBus();
 	return err_;
 }
 
@@ -1360,6 +1493,9 @@ int Dib8096::Initialize()
 	TunerSleepLine(0);
 	TWr(0x23, TRd(0x23) | 1 << 14);
 	asleep_ = false;
+
+	/* DC 校正は周波数に依存しない。初回の選局に含めず、開くときに済ませる */
+	TunerCalibrateDc();
 
 	output_mode_ = OutputMode::PARALLEL_GATED;
 	SetOutputModeRaw(output_mode_);
@@ -1605,6 +1741,21 @@ unsigned int Dib8096::DcOffsetCalibration()
 	return ret;
 }
 
+void Dib8096::TunerCalibrateDc()
+{
+	tuner_.tune_state = TUNER_START;
+
+	while (!err_ && (tuner_.calibrate & CAL_DC)) {
+		unsigned int ret = TunerTune();
+
+		if (!(tuner_.calibrate & CAL_DC))
+			break;
+		Sleepms(10 * (ret + 99) / 100);
+	}
+
+	tuner_.tune_state = TUNER_START;
+}
+
 unsigned int Dib8096::WbdCalibration()
 {
 	Tuner &t = tuner_;
@@ -1663,6 +1814,7 @@ unsigned int Dib8096::GetTemperature()
 		TWr(0x10, t.wbdmux);
 		t.tune_state = TUNER_START;
 		t.calibrate &= ~CAL_TEMP;
+		t.temp_time_us = NowUs();
 		return 15;
 	}
 
@@ -1689,7 +1841,31 @@ unsigned int Dib8096::CaptrimSearch()
 		}
 		t.adc_diff = 3000;
 		t.tune_state = TUNER_STEP0;
+		if (!t.p1g && !t.tuned) {
+			/* 前回この周波数で決めた値を試し、ADC がほぼ同じなら二分探索を省く */
+			auto it = t.captrim_cache.find(t.rf_request);
+
+			if (it != t.captrim_cache.end()) {
+				t.reuse = it->second;
+				TWr(0x18, 0xE900 | t.reuse.captrim);
+				t.tune_state = TUNER_STEP4;
+			}
+		}
 		break;
+	case TUNER_STEP4: {
+		const int adc = TRd(0x1D);
+		const int target = (t.rest == 0) ? 200 : 400;
+
+		if (std::abs(adc - target) <= t.reuse.adc_diff + 50) {
+			t.fcaptrim = t.reuse.captrim;
+			t.tune_state = TUNER_STEP3;
+		} else {
+			t.captrim_cache.erase(t.rf_request);
+			t.step = t.captrim = t.fcaptrim = 64;
+			t.tune_state = TUNER_STEP0;
+		}
+		break;
+	}
 	case TUNER_STEP0:
 		if (t.p1g) {
 			TWr(0x40, 3 << 7 | 31 << 2 | 1 << 1 | 1);
@@ -1724,6 +1900,7 @@ unsigned int Dib8096::CaptrimSearch()
 		break;
 	case TUNER_STEP2:
 		TWr(0x18, 0xE900 | t.fcaptrim);
+		t.captrim_cache[t.rf_request] = { t.fcaptrim, t.adc_diff };
 		t.tune_state = TUNER_STEP3;
 		break;
 	case TUNER_STEP3:
@@ -1881,7 +2058,10 @@ unsigned int Dib8096::TunerTune()
 		t.rf_lt_def = 0x7C00;
 		TunerSetBandwidth();
 		t.tuned = true;
-		t.calibrate |= CAL_WBD | CAL_TEMP;
+		/* 温度は短時間では変わらないため、60 秒以内の測定値を使い回す */
+		t.calibrate |= CAL_WBD;
+		if (!t.temp_time_us || NowUs() - t.temp_time_us > 60000000ull)
+			t.calibrate |= CAL_TEMP;
 		t.tune_state = TUNER_STOP;
 		return kNever;
 	default:
@@ -2034,6 +2214,24 @@ int Dib8096::Tune(std::uint32_t frequency_hz)
 		l.modulation = MOD_AUTO;
 		l.interleaving = 0;
 		l.segment_count = 0;
+	}
+
+	auto lock = locks_.find(frequency_hz);
+
+	manual_mode_ = (lock != locks_.end());
+	if (manual_mode_) {
+		const LockRecord &rec = lock->second;
+
+		channel_.transmission_mode = rec.transmission_mode;
+		channel_.guard_interval = rec.guard_interval;
+		channel_.inversion = rec.inversion;
+		channel_.partial_reception = rec.partial_reception;
+		for (int i = 0; i < 3; i++) {
+			channel_.layer[i].fec = rec.fec[i];
+			channel_.layer[i].modulation = rec.modulation[i];
+			channel_.layer[i].interleaving = rec.interleaving[i];
+			channel_.layer[i].segment_count = rec.segment_count[i];
+		}
 	}
 
 	int r = SetFrontend();
