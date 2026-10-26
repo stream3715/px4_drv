@@ -269,6 +269,9 @@
     <ClCompile Include="driver_host.cpp" />
     <ClCompile Include="isdb2056_device.cpp" />
     <ClCompile Include="isdbt2071_device.cpp" />
+    <ClCompile Include="dib8096.cpp" />
+    <ClCompile Include="mb86h47_bridge.cpp" />
+    <ClCompile Include="zd1_device.cpp" />
     <ClCompile Include="itedtv_bus_winusb.c" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="misc_win.c" />
@@ -311,6 +314,12 @@
     <ClInclude Include="driver_host.hpp" />
     <ClInclude Include="isdb2056_device.hpp" />
     <ClInclude Include="isdbt2071_device.hpp" />
+    <ClInclude Include="dib8096.hpp" />
+    <ClInclude Include="dib8096_tables.h" />
+    <ClInclude Include="mb86h47_bridge.hpp" />
+    <ClInclude Include="zd1_device.hpp" />
+    <ClInclude Include="zd1_firmware.h" />
+    <ClInclude Include="zd1_ts_framer.hpp" />
     <ClInclude Include="misc_win.h" />
     <ClInclude Include="notify_icon.hpp" />
     <ClInclude Include="pipe_server.hpp" />
