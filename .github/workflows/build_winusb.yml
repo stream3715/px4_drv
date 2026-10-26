@@ -142,6 +142,26 @@ jobs:
                   )
               },
               @{
+                  Directory = 'dist/BonDriver_CECHZD1J_32bit'
+                  Files = @(
+                      'BonDriver_CECHZD1J.dll',
+                      'BonDriver_CECHZD1J.ini',
+                      'BonDriver_PX4-T.ChSet.txt'
+                  )
+                  # CECH-ZD1 J はファームウェア・ファイルを必要としない
+                  ExcludeCommonFiles = @('it930x-firmware.bin')
+              },
+              @{
+                  Directory = 'dist/BonDriver_CECHZD1J_64bit'
+                  Files = @(
+                      'BonDriver_CECHZD1J.dll',
+                      'BonDriver_CECHZD1J.ini',
+                      'BonDriver_PX4-T.ChSet.txt'
+                  )
+                  # CECH-ZD1 J はファームウェア・ファイルを必要としない
+                  ExcludeCommonFiles = @('it930x-firmware.bin')
+              },
+              @{
                   Directory = 'dist/BonDriver_PX-M1UR_32bit'
                   Files = @(
                       'BonDriver_PX-M1UR.dll',
@@ -191,7 +211,7 @@ jobs:
                   throw "Distribution directory was not found: $distribution_directory"
               }
 
-              $artifact_file_names = $distribution_check.Files + $common_distribution_file_names
+              $artifact_file_names = $distribution_check.Files + ($common_distribution_file_names | Where-Object { $distribution_check.ExcludeCommonFiles -notcontains $_ })
               foreach ($artifact_file_name in $artifact_file_names) {
                   $artifact_file_path = Join-Path $distribution_directory $artifact_file_name
 

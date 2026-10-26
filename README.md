@@ -145,6 +145,11 @@ PLEX 社の [Webサイト](http://plex-net.co.jp) にて配布されている公
 	- DTV03A-1TU (実験的)
 	  - チップ構成が大幅に変更された、ロット番号 2021-11 以降の個体のみ対応しています。
 
+- Sony
+
+	- CECH-ZD1 J (実験的、Windows (WinUSB) 版のみ)
+	  - ファームウェア・ファイルは不要です。詳細と検証範囲は [docs/cech_zd1j.md](docs/cech_zd1j.md) を参照してください。
+
 > [!NOTE]  
 > 2021 年以降メンテナンスされていない [nns779/px4_drv](https://github.com/nns779/px4_drv) から、新規に下記チューナーのサポートを追加しています。
 > 
@@ -198,9 +203,11 @@ certutil.exe -addstore TrustedPublisher ".\px4_drv_winusb.cer"
 - DTV03A-1TU: `BonDriver_ISDBT2071`
 - PX-M1UR: `BonDriver_PX-M1UR`
 - PX-S1UR: `BonDriver_PX-S1UR`
+- CECH-ZD1 J: `BonDriver_CECHZD1J`
 
 お使いの PC に合うビット数のフォルダの中のファイルを**すべて**選択し、TVTest や EDCB などのソフトウェアが指定する BonDriver の配置フォルダにコピーします。  
-BonDriver と同じフォルダに DriverHost_PX4.exe / DriverHost_PX4.ini / it930x-firmware.bin があることを確認してください。
+BonDriver と同じフォルダに DriverHost_PX4.exe / DriverHost_PX4.ini / it930x-firmware.bin があることを確認してください。  
+CECH-ZD1 J の BonDriver フォルダには it930x-firmware.bin は含まれません (不要です)。
 
 使用にあたり、特段 ini ファイルの設定変更などは必要ありません。ソフトウェアごとにチャンネルスキャンを行えばそのまま視聴できます。  
 なお、BonDriver の ini ファイル内の `DisplayErrorMessage` を 1 に設定すると、オリジナル同様にエラー発生時にメッセージボックスを表示します。

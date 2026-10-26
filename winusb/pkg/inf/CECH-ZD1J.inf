@@ -1,0 +1,44 @@
+;
+; Sony CECH-ZD1 J
+;
+[Version]
+Signature="$Windows NT$"
+Class=Media
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%AuthorName%
+DriverVer=10/27/2026,26.10.27.00
+CatalogFile=px4_drv_winusb.cat
+
+[Manufacturer]
+%AuthorName%=ZD1J_WinUSB,ntx86,ntamd64,ntarm64
+
+[ZD1J_WinUSB.ntx86]
+%ZD1J_WinUSB.DeviceDesc%=ZD1J_WinUSB.DeviceInstall,USB\VID_054C&PID_04B2
+
+[ZD1J_WinUSB.ntamd64]
+%ZD1J_WinUSB.DeviceDesc%=ZD1J_WinUSB.DeviceInstall,USB\VID_054C&PID_04B2
+
+[ZD1J_WinUSB.ntarm64]
+%ZD1J_WinUSB.DeviceDesc%=ZD1J_WinUSB.DeviceInstall,USB\VID_054C&PID_04B2
+
+[ZD1J_WinUSB.DeviceInstall]
+Include=winusb.inf
+Needs=WINUSB.NT
+AddProperty=ZD1J_WinUSB.DeviceSetup.AddProperty
+
+[ZD1J_WinUSB.DeviceInstall.Services]
+Include=winusb.inf
+Needs=WINUSB.NT.Services
+
+[ZD1J_WinUSB.DeviceInstall.HW]
+AddReg=ZD1J_WinUSB.DeviceSetup.AddReg
+
+[ZD1J_WinUSB.DeviceSetup.AddReg]
+HKR,,DeviceInterfaceGUIDs,0x00010000,"{e983f0f1-e985-4cfd-92b9-470074b742eb}"
+
+[ZD1J_WinUSB.DeviceSetup.AddProperty]
+{afd97640-86a3-4210-b67c-289c41aabe55},3,0x00000011,,0   ;DEVPKEY_Device_SafeRemovalRequiredOverride=FALSE
+
+[Strings]
+AuthorName="nns779"
+ZD1J_WinUSB.DeviceDesc="Sony CECH-ZD1 J ISDB-T Receiver Device (WinUSB)"
