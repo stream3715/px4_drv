@@ -242,7 +242,7 @@ int main(int argc, char **argv)
 		px4::Dib8096::Status st = {};
 		if (!ret) {
 			ret = dib.GetStatus(st);
-			Log("status flags=0x%02X strength=%d mdBm cnr=%d cdB valid=%d ret=%d\n", st.flags, st.strength_mdbm, st.cnr_cdb, st.cnr_valid, ret);
+			Log("status flags=0x%02X strength=%d mdBm cnr=%d mdB valid=%d ret=%d\n", st.flags, st.strength_mdbm, st.cnr_mdb, st.cnr_valid, ret);
 		}
 		if (!ret && (st.flags & px4::Dib8096::STATUS_LOCK)) {
 			ret = br.StreamPrepare();
@@ -357,7 +357,7 @@ int main(int argc, char **argv)
 					Log("  sleeps: %s\n", h.c_str());
 				}
 				Log("ch%d: ret=%d total=%.0fms sleeps=%u (req %.0f real %.0f) i2c=%u (%.0fms) flags=0x%02X cnr=%d\n",
-					ch, ret, total, prof.sleeps, prof.sleep_req, prof.sleep_real, prof.i2c_n, prof.i2c, st.flags, st.cnr_cdb);
+					ch, ret, total, prof.sleeps, prof.sleep_req, prof.sleep_real, prof.i2c_n, prof.i2c, st.flags, st.cnr_mdb);
 			}
 		}
 		dib.Sleep();

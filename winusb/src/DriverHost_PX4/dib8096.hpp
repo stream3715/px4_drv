@@ -56,7 +56,7 @@ public:
 	struct Status {
 		unsigned int flags;	/* STATUS_* */
 		int strength_mdbm;	/* 1/1000 dBm */
-		int cnr_cdb;		/* 1/100 dB。ロック時のみ有効 */
+		int cnr_mdb;		/* 1/1000 dB。ロック時のみ有効 */
 		bool cnr_valid;
 	};
 

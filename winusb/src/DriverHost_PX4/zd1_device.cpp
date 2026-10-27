@@ -670,7 +670,7 @@ int Zd1Device::Zd1Receiver::ReadStat(px4::command::StatType type, std::int32_t &
 
 		ret = parent_.dib_->GetStatus(st);
 		if (!ret && st.cnr_valid)
-			value = st.cnr_cdb;
+			value = st.cnr_mdb;
 
 		break;
 	}

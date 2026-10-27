@@ -1410,12 +1410,12 @@ int Dib8096::GetStatus(Status &st)
 	st.strength_mdbm = static_cast<int>(y - 131000);
 
 	st.cnr_valid = false;
-	st.cnr_cdb = 0;
+	st.cnr_mdb = 0;
 	if (st.flags & STATUS_LOCK) {
 		std::uint32_t snr = GetSnr() >> 16;
 
 		st.cnr_valid = true;
-		st.cnr_cdb = snr ? static_cast<int>(1000.0 * std::log10(static_cast<double>(snr)) + 0.5) : 0;
+		st.cnr_mdb = snr ? static_cast<int>(10000.0 * std::log10(static_cast<double>(snr)) + 0.5) : 0;
 	}
 
 	FlushBus();
