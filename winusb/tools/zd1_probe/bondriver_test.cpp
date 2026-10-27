@@ -69,7 +69,7 @@ int wmain(int argc, wchar_t **argv)
 		wprintf(L"SetChannel(0, %lu) = %d (%lu ms) level=%.2f\n", ch, ok, GetTickCount() - t0, drv->GetSignalLevel());
 
 		DWORD begin = GetTickCount();
-		std::uint64_t total = 0, bad = 0, pid0 = 0, cerr = 0;
+		std::uint64_t total = 0, bad = 0, pid0 = 0, cerr = 0, scr = 0, tei = 0, last_scr = 0;
 		int cc[8192];
 		for (int &c : cc)
 			c = -1;
@@ -89,6 +89,13 @@ int wmain(int argc, wchar_t **argv)
 						bad++;
 					const unsigned pid = ((p[i + 1] & 0x1F) << 8) | p[i + 2];
 
+					if (p[i + 1] & 0x80)
+						tei++;
+					if (pid != 0x1FFF && (p[i + 3] & 0xC0)) {
+						scr++;
+						last_scr = total;
+					}
+
 					if (pid == 0)
 						pid0++;
 					if (pid != 0x1FFF && (p[i + 3] & 0x10)) {
@@ -106,8 +113,8 @@ int wmain(int argc, wchar_t **argv)
 			}
 		}
 
-		wprintf(L"  ch %lu: first TS after %lu ms, pkts=%llu bad=%llu pid0=%llu continuity-errors=%llu level=%.2f\n",
-			ch, first_ts, total, bad, pid0, cerr, drv->GetSignalLevel());
+		wprintf(L"  ch %lu: first TS after %lu ms, pkts=%llu bad=%llu pid0=%llu continuity-errors=%llu scrambled=%llu (last at pkt %llu) tei=%llu level=%.2f\n",
+			ch, first_ts, total, bad, pid0, cerr, scr, last_scr, tei, drv->GetSignalLevel());
 	}
 
 	if (fp)
