@@ -270,6 +270,8 @@
     <ClCompile Include="isdb2056_device.cpp" />
     <ClCompile Include="isdbt2071_device.cpp" />
     <ClCompile Include="dib8096.cpp" />
+    <ClCompile Include="dib8096_dib0090.cpp" />
+    <ClCompile Include="dib8096_i2c.cpp" />
     <ClCompile Include="mb86h47_bridge.cpp" />
     <ClCompile Include="zd1_device.cpp" />
     <ClCompile Include="itedtv_bus_winusb.c" />
@@ -315,6 +317,7 @@
     <ClInclude Include="isdb2056_device.hpp" />
     <ClInclude Include="isdbt2071_device.hpp" />
     <ClInclude Include="dib8096.hpp" />
+    <ClInclude Include="dib8096_internal.h" />
     <ClInclude Include="dib8096_tables.h" />
     <ClInclude Include="mb86h47_bridge.hpp" />
     <ClInclude Include="zd1_device.hpp" />

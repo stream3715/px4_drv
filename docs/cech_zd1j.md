@@ -13,7 +13,7 @@ IT930x 系と共通する部分がないため、機種別デバイス `Zd1Devic
 | ファイル | 内容 | ライセンス |
 | --- | --- | --- |
 | `winusb/src/DriverHost_PX4/mb86h47_bridge.{hpp,cpp}` | USB ベンダー要求 0xBC によるチップ内メモリの読み書き、内蔵 CPU (codec core 0/1) へのプログラム投入、I2C、TS ストリーム、カードスロットの UART | GPL-2.0 |
-| `winusb/src/DriverHost_PX4/dib8096.{hpp,cpp}`, `dib8096_tables.h` | DiB8000 / DiB0090 の制御。Linux の `dib8000.c` / `dib0090.c` / `dibx000_common.c` / `dib0700_devices.c` (DiBcom) の ISDB-T 13 セグメント経路の移植 | GPL-2.0-only |
+| `winusb/src/DriverHost_PX4/dib8096.{hpp,cpp}`, `dib8096_i2c.cpp`, `dib8096_dib0090.cpp`, `dib8096_internal.h`, `dib8096_tables.h` | DiB8000 / DiB0090 の制御。Linux の `dib8000.c` / `dib0090.c` / `dibx000_common.c` / `dib0700_devices.c` (DiBcom) の ISDB-T 13 セグメント経路の移植 | GPL-2.0-only |
 | `winusb/src/DriverHost_PX4/zd1_device.{hpp,cpp}` | `DeviceBase` の実装。受信機 1 つ、カードリーダー、LED | GPL-2.0 |
 | `winusb/src/DriverHost_PX4/zd1_ts_framer.hpp` | 192 バイト単位 (4 バイトの到着時刻 + 188 バイトの TS) から TS を取り出し、境界を見失ったら回復する | GPL-2.0 |
 | `winusb/src/DriverHost_PX4/zd1_firmware.h` | 内蔵 CPU へ書き込むプログラム (生成物) | GPL-2.0 |
@@ -126,7 +126,7 @@ Zadig などで WinUSB を割り当てた場合は、デバイスインターフ
 
 ```powershell
 # bring-up 用。デバイスインターフェース GUID は上記のレジストリ値
-x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iwinusb/src/DriverHost_PX4 -Idriver winusb/tools/zd1_probe/zd1_probe.cpp winusb/src/DriverHost_PX4/mb86h47_bridge.cpp winusb/src/DriverHost_PX4/dib8096.cpp -o zd1_probe.exe -lsetupapi -lwinusb -static
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iwinusb/src/DriverHost_PX4 -Idriver winusb/tools/zd1_probe/zd1_probe.cpp winusb/src/DriverHost_PX4/mb86h47_bridge.cpp winusb/src/DriverHost_PX4/dib8096.cpp winusb/src/DriverHost_PX4/dib8096_i2c.cpp winusb/src/DriverHost_PX4/dib8096_dib0090.cpp -o zd1_probe.exe -lsetupapi -lwinusb -static
 zd1_probe.exe "{GUID}" info                      # 状態の読み出しだけ (書き込みなし)
 zd1_probe.exe "{GUID}" start                     # 起動手順、DiB8000 の識別
 zd1_probe.exe "{GUID}" tune 27 10 out.ts         # 物理チャンネル 27ch を選局し、10 秒受信して TS を保存
