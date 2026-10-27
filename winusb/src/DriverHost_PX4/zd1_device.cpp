@@ -606,7 +606,7 @@ int Zd1Device::Zd1Receiver::SetCapture(bool capture)
 		std::lock_guard<std::recursive_mutex> dev_lock(parent_.lock_);
 
 		if (parent_.available_)
-			parent_.dib_->SetOutputMode(px4::Dib8096::OutputMode::HIGH_Z);
+			parent_.dib_->HoldOutput();
 	}
 
 	return ret;

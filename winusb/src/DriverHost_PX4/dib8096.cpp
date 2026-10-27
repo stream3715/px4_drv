@@ -1447,6 +1447,14 @@ int Dib8096::SetOutputMode(OutputMode mode)
 	return err_;
 }
 
+int Dib8096::HoldOutput()
+{
+	err_ = 0;
+	SetOutputModeRaw(OutputMode::HIGH_Z);
+	FlushBus();
+	return err_;
+}
+
 int Dib8096::SetGpio(unsigned int pin, bool high)
 {
 	err_ = 0;

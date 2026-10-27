@@ -92,6 +92,8 @@ public:
 	/* ブリッジ側の DiB8096 リセットと、レジスタ 1287 への 3 の書き込みが済んでいること */
 	int Initialize();
 	int SetOutputMode(OutputMode mode);
+	/* 次の選局までだけ TS 出力を止める。選局後に戻すモード (output_mode_) は変えない */
+	int HoldOutput();
 	int SetGpio(unsigned int pin, bool high);
 	int Tune(std::uint32_t frequency_hz);
 	int GetStatus(Status &status);
