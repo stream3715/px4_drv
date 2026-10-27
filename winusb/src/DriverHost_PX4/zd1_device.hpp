@@ -120,7 +120,6 @@ private:
 	void BeginStreamPrepare();
 	void WaitDuringTune(unsigned int ms);
 	int FinishStreamPrepare();
-	static std::wstring LockCachePath();
 	void LoadLocks();
 	void SaveLocks();
 	int StreamHandler(const std::uint8_t *buf, std::size_t len);

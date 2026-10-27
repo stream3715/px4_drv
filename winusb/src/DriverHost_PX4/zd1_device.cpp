@@ -5,6 +5,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <chrono>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -132,8 +134,6 @@ int Zd1Device::Init()
 		dev_err(&dev_, "px4::Zd1Device::Init: Dib8096::Initialize() failed. (ret: %d)\n", ret);
 		goto fail;
 	}
-
-	LoadLocks();
 
 	/* 受信機を開くまでは省電力にしておく。次の Tune で自動的に復帰する */
 	ret = dib_->Sleep();
@@ -286,44 +286,28 @@ ReceiverBase* Zd1Device::GetReceiver(int id) const
 	return receiver_.get();
 }
 
-std::wstring Zd1Device::LockCachePath()
-{
-	wchar_t buf[MAX_PATH];
-	DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-
-	if (!n || n >= MAX_PATH)
-		return std::wstring();
-
-	std::wstring path(buf, n);
-	size_t pos = path.find_last_of(L"\\/");
-
-	path.resize(pos == std::wstring::npos ? 0 : pos + 1);
-	return path + L"CECH-ZD1J_locks.txt";
-}
+namespace {
 
 /*
- * ロックしたチャンネルの伝送パラメーターは放送局ごとに固定のため、DriverHost_PX4 の再起動後も使えるよう
- * 実行ファイルの隣に保存する。読めない・書けない場合は、毎回自動探索になるだけで動作は変わらない。
+ * ロックしたチャンネルの伝送パラメーターは放送局ごとに固定のため、同じ DriverHost_PX4 の中の受信機で共有する。
+ * 2 台目以降の初回の選局も、自動探索を省略できる。保存はしないため、DriverHost_PX4 の再起動後は探索から始まる。
  */
+std::mutex g_locks_mutex;
+std::map<std::uint32_t, px4::Dib8096::LockRecord> g_locks;
+
+} // namespace
+
 void Zd1Device::LoadLocks()
 {
-	const std::wstring path = LockCachePath();
-	FILE *fp = nullptr;
-
-	if (path.empty() || _wfopen_s(&fp, path.c_str(), L"r") || !fp)
-		return;
-
 	std::vector<px4::Dib8096::LockRecord> records;
-	px4::Dib8096::LockRecord r = {};
 
-	while (fscanf_s(fp, "%u %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
-		&r.frequency, &r.transmission_mode, &r.guard_interval, &r.inversion, &r.partial_reception,
-		&r.fec[0], &r.modulation[0], &r.interleaving[0], &r.segment_count[0],
-		&r.fec[1], &r.modulation[1], &r.interleaving[1], &r.segment_count[1],
-		&r.fec[2], &r.modulation[2], &r.interleaving[2], &r.segment_count[2]) == 17)
-		records.push_back(r);
+	{
+		std::lock_guard<std::mutex> lock(g_locks_mutex);
 
-	fclose(fp);
+		for (const auto &kv : g_locks)
+			records.push_back(kv.second);
+	}
+
 	dib_->ImportLocks(records);
 }
 
@@ -334,31 +318,14 @@ void Zd1Device::SaveLocks()
 	if (!dib_ || !dib_->locks_dirty())
 		return;
 
-	const std::wstring path = LockCachePath();
+	{
+		std::lock_guard<std::mutex> locks_lock(g_locks_mutex);
 
-	if (path.empty())
-		return;
-
-	const std::wstring tmp = path + L".tmp";
-	FILE *fp = nullptr;
-
-	if (_wfopen_s(&fp, tmp.c_str(), L"w") || !fp)
-		return;
-
-	for (const auto &r : dib_->ExportLocks()) {
-		fprintf(fp, "%u %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
-			r.frequency, r.transmission_mode, r.guard_interval, r.inversion, r.partial_reception,
-			r.fec[0], r.modulation[0], r.interleaving[0], r.segment_count[0],
-			r.fec[1], r.modulation[1], r.interleaving[1], r.segment_count[1],
-			r.fec[2], r.modulation[2], r.interleaving[2], r.segment_count[2]);
+		for (const auto &r : dib_->ExportLocks())
+			g_locks[r.frequency] = r;
 	}
 
-	const bool ok = (fclose(fp) == 0);
-
-	if (ok && MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-		dib_->clear_locks_dirty();
-	else
-		DeleteFileW(tmp.c_str());
+	dib_->clear_locks_dirty();
 }
 
 int Zd1Device::StartCapture()
@@ -554,6 +521,7 @@ int Zd1Device::Zd1Receiver::SetFrequency()
 	/* 選局中は TS 出力が止まっている必要がある。受信中なら先に TS の読み出しを止める */
 	parent_.StopCapture();
 	parent_.BeginStreamPrepare();
+	parent_.LoadLocks();
 
 	int ret = parent_.dib_->Tune(params_.freq * 1000);
 	if (ret)
